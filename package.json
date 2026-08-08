@@ -1,0 +1,13 @@
+{
+  "name": "dunyabunya-lead-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dunyo Bunyo qurilish do'koni uchun Telegram + Google Sheets lead-nazorat boti",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "googleapis": "^140.0.1",
+    "@vercel/kv": "^2.0.0"
+  }
+}

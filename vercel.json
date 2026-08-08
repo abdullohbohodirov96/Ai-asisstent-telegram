@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/daily-report?secret=REPLACE_WITH_YOUR_CRON_SECRET",
+      "schedule": "0 15 * * *"
+    }
+  ]
+}
