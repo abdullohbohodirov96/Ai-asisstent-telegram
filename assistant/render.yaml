@@ -1,0 +1,35 @@
+# Render Blueprint (reference). Easiest path: create the Web Service manually
+# with Root Directory = assistant (see README "Render"). If you use Blueprints,
+# move this file to the repository root.
+services:
+  - type: web
+    name: abdulloh-ai-assistant
+    runtime: node
+    rootDir: assistant
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TIMEZONE
+        value: Asia/Tashkent
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: OWNER_TELEGRAM_ID
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL_FAST
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_MODEL_DEEP
+        value: gemini-3.5-flash-lite
+      - key: CRON_SECRET
+        generateValue: true
+      - key: MONTHLY_AI_BUDGET_USD
+        value: "5"

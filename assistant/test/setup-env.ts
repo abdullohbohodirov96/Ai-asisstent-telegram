@@ -1,0 +1,17 @@
+process.env.NODE_ENV = "test";
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/shadow_test";
+process.env.DATABASE_SSL = "false";
+process.env.TELEGRAM_BOT_TOKEN = "000000:test-token-not-real";
+process.env.OWNER_TELEGRAM_ID = "1000";
+process.env.TELEGRAM_WEBHOOK_SECRET = "hook-secret";
+process.env.CRON_SECRET = "cron-secret";
+process.env.GEMINI_API_KEY = "test";
+process.env.GEMINI_MODEL_FAST = "test-fast";
+process.env.GEMINI_MODEL_DEEP = "test-deep";
+process.env.AI_PRICING_JSON = JSON.stringify({ "test-fast": { input: 1, output: 2 }, "test-deep": { input: 3, output: 6 } });
+process.env.TIMEZONE = "Asia/Tashkent";
+process.env.DISABLE_WORKER = "true";
+process.env.MONTHLY_AI_BUDGET_USD = "5";
+process.env.DAILY_MAX_LEARNING_QUESTIONS = "5";
+process.env.QUESTION_HOURS_START = "0";
+process.env.QUESTION_HOURS_END = "24";
