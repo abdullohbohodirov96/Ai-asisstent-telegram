@@ -47,6 +47,46 @@ Barcha jadvallar `as_` prefiksli, shuning uchun bir Neon bazada boshqa loyihalar
 
 ---
 
+## Bepul rejim: Render (qabul qiladi) + noutbuk (Claude bilan tahlil qiladi)
+
+AI uchun alohida pul to'lamaslik uchun: Render 24/7 faqat xabarlarni qabul qilib Neon'ga saqlaydi, tahlil esa noutbukingizdagi `claude` (Claude Code, sizning obunangiz) orqali bajariladi. Noutbukni kechasi yoki tushlikda yoqasiz — u to'plangan hamma narsani tahlil qiladi, savol beradi, reportlarni yuboradi. Noutbuk o'chiq paytda hech narsa yo'qolmaydi (hammasi bazada navbatda turadi).
+
+```
+Telegram ──▶ Render (bepul, faqat saqlaydi) ──▶ Neon ◀── noutbuk: npm run worker ──▶ claude -p
+```
+
+**Render** (Environment): odatdagi o'zgaruvchilar + `DISABLE_WORKER=true`. `GEMINI_API_KEY` kerak emas. Tashqi cron (9-band) kerak emas.
+
+**Noutbuk** (bir marta):
+```bash
+git clone https://github.com/abdullohbohodirov96/Ai-asisstent-telegram.git
+cd Ai-asisstent-telegram/assistant
+npm ci --include=dev && npm run build
+claude            # bir marta login bo'ling (obunangiz bilan), keyin chiqing
+```
+`assistant/.env` fayl yarating (Render'dagi bilan bir xil `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID`):
+```
+AI_PROVIDER=claude-cli
+DATABASE_URL=postgres://...      # Neon
+TELEGRAM_BOT_TOKEN=...
+OWNER_TELEGRAM_ID=...
+TIMEZONE=Asia/Tashkent
+```
+**Har safar:**
+```bash
+cd Ai-asisstent-telegram/assistant
+npm run worker        # .env faylini o'zi o'qiydi
+```
+To'xtatish: `Ctrl+C`. Kodni yangilaganda: `git pull && npm run build`.
+
+Eslatmalar:
+- Noutbuk o'chiq paytda bot `/tasks` kabi buyruqlarga ham javob bermaydi — noutbuk yoqilganda hammasiga ketma-ket javob beradi. Reportlar ham noutbuk yoqilganda yuboriladi (o'tkazib yuborilganlari bitta reportga jamlanadi).
+- Bitta 5 daqiqalik suhbat oynasini tahlil qilish ~30–60 soniya oladi. Kechasi bir necha soat yoniq tursa, kunlik yozishmalarga bemalol yetadi. Obunangiz limitiga yetsangiz, qolgan batchlar keyingi safar tahlil qilinadi.
+- Tezroq va obuna limitini kamroq sarflash uchun: `CLAUDE_MODEL_FAST=haiku` (sifat biroz pastroq). Sifat uchun: `sonnet` (default).
+- Ovozli xabarlarni `claude` transkripsiya qila olmaydi — owner'ning ovozli xabariga "matn bilan yozing" javobi keladi.
+- Xavfsizlik: `claude` barcha tool'lar o'chirilgan holda (`--tools ""`, `--safe-mode`), bo'sh vaqtinchalik papkada ishga tushadi: chatdagi begona matn noutbukingizda hech qanday buyruq bajara olmaydi.
+- Windows: agar `claude` topilmasa, `CLAUDE_CLI_PATH` ga to'liq yo'lini yozing (masalan `C:\Users\<siz>\.local\bin\claude.exe`).
+
 ## Noldan deployment
 
 ### 1. Telegram bot yaratish
