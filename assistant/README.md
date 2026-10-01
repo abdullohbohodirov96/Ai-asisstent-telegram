@@ -88,6 +88,7 @@ Billing yoqilmagan (free tier) kalit ham ishlaydi, lekin limitlari past. `gemini
 6. **Health Check Path:** `/health`
 7. **Environment:** `.env.example` dagi barcha o'zgaruvchilar. Kamida quyidagilar kerak: `TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID`, `TELEGRAM_WEBHOOK_SECRET`, `DATABASE_URL`, `GEMINI_API_KEY`, `CRON_SECRET`, `TIMEZONE=Asia/Tashkent`.
    Secretlarni yaratish: `openssl rand -hex 32`.
+   `TELEGRAM_WEBHOOK_SECRET` production'da **majburiy**: bo'sh bo'lsa webhook har bir so'rovga `503` qaytaradi (aks holda URL'ni bilgan har kim owner nomidan soxta update yubora oladi).
 
 > Lead-nazorat boti (Vercel, repo root) bunga tegmaydi. Assistent `assistant/` papkasida alohida servis. `.vercelignore` bu papkani Vercel'dan chiqarib qo'yadi.
 
@@ -130,7 +131,7 @@ Header: `Authorization: Bearer <CRON_SECRET>` (yoki `X-Cron-Secret: <CRON_SECRET
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://<servis>/internal/cron/analyze
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://<servis>/internal/cron/report/morning
 ```
-Report endpointlari idempotent: bir slot ikki marta yuborilmaydi (`as_report_runs` unique `sana+slot`). Vaqti kelmagan slot `NOT_DUE` qaytaradi (majburlash uchun `?force=1`). Server uxlab qolib, report vaqtini o'tkazib yuborsa, uyg'onganda eng so'nggi o'tkazib yuborilgan slotni yuboradi. Undan oldingi oynalar ham shu reportga qo'shiladi, shuning uchun eski brieflar ketma-ket spam bo'lib kelmaydi.
+Report endpointlari idempotent: bir slot ikki marta yuborilmaydi (`as_report_runs` unique `sana+slot`). Report yetkazilgandan keyin DB yozuvi xato bersa ham u qayta yuborilmaydi. Cron endpoint ham in-process scheduler bilan bir xil yo'ldan o'tadi: o'tkazib yuborilgan oldingi slotlar keyinroq tartibsiz kelmaydi. Vaqti kelmagan slot `NOT_DUE` qaytaradi (majburlash uchun `?force=1`). Server uxlab qolib, report vaqtini o'tkazib yuborsa, uyg'onganda eng so'nggi o'tkazib yuborilgan slotni yuboradi. Undan oldingi oynalar ham shu reportga qo'shiladi, shuning uchun eski brieflar ketma-ket spam bo'lib kelmaydi.
 
 ### 10. Test qilish
 ```bash
@@ -153,7 +154,8 @@ npm run typecheck && npm run build
 ### 11. Shadow Mode ishlayotganini tekshirish
 - `/shadow`: V1 lock ON, `ALLOW_*` amalda `false`, bloklangan urinishlar soni, business connection'da reply huquqi bor-yo'qligi.
 - DB: `select method, chat_id, allowed, reason from as_outbound_audit order by id desc;` — har bir `sendMessage` shu yerda. `allowed=true` qatorlarning hammasida `chat_id` = sizning ID'ingiz bo'lishi kerak.
-- Kod: botdagi barcha chiqish `src/telegram/api.ts → callTelegram()` orqali o'tadi. Guard `business_connection_id` bo'lgan har qanday chaqiruvni, owner'dan boshqa `chat_id`ni va allow-list'da yo'q metodlarni (`forwardMessage`, `editMessageText`, `deleteMessage`, …) rad etadi.
+- Kod: botdagi barcha chiqish `src/telegram/api.ts → callTelegram()` orqali o'tadi. Guard `business_connection_id` bo'lgan har qanday chaqiruvni (yagona istisno — faqat o'qiydigan `getBusinessConnection`), owner'dan boshqa `chat_id`ni (qat'iy tekshiruv: faqat butun son yoki raqamli satr) va allow-list'da yo'q metodlarni (`forwardMessage`, `editMessageText`, `deleteMessage`, `setWebhook`, `setMyCommands`, …) rad etadi. Webhook/menyu sozlamalari faqat qo'lda `curl` bilan qilinadi.
+- Noma'lum business connection'dan kelgan xabar ishonchsiz hisoblanadi: bot `getBusinessConnection` orqali egasini tekshiradi, owner'niki bo'lmasa xabar saqlanmaydi (Premium'li har kim botni o'z akkauntiga ulashi mumkin).
 - Webhook javobi har doim `{"ok":true}`. Telegram webhook javobiga metod qo'yish imkoniyati ham ishlatilmaydi.
 - Testlar: `test/shadow.test.ts`, `test/e2e.test.ts`.
 
@@ -173,6 +175,11 @@ Render → Environment → Save → avtomatik redeploy. `/cost` joriy modellarni
 Debug: `/debug_last_batch` `/debug_memory` `/debug_project <nom>` `/debug_usage`
 
 Oddiy matn yoki ovoz bilan ham yozish mumkin: "ertaga 10:00 da Boburga qo'ng'iroqni eslat", "nega #3 deb o'ylayapsan?", "men uzun intro'larni yoqtirmayman".
+
+### Render free + Neon free: muhim eslatma
+- Worker har `WORKER_INTERVAL_SECONDS` (30s) da DB'ga so'rov yuboradi, `/health` ham DB'ni tekshiradi. Render uyg'oq turgan paytda Neon compute uxlamaydi. Tashqi cron har 5 daqiqada chaqirsa, Neon deyarli 24/7 ishlaydi — Neon free tarifidagi oylik compute soat limitini tekshiring. Kerak bo'lsa `WORKER_INTERVAL_SECONDS=300` qo'ying (tashqi cron baribir ishni bajaradi).
+- Barcha tashqi so'rovlarda timeout bor (Telegram 30s, Gemini 120s, Postgres ulanish 15s / so'rov 60s): osilib qolgan so'rov fon ishlarini to'xtatib qo'ymaydi.
+- Kun almashganda (masalan, server 17:59 dan ertalabgacha uxlasa) kechagi kechki report yuborilmaydi — bugungi birinchi report o'z oynasini qamraydi.
 
 ## Xarajat (taxminiy)
 Bitta 5 daqiqalik batch taxminan 3–5k input va ~1k output token oladi. `gemini-3.5-flash-lite` narxida (≈$0.30 / $2.50 per 1M, [tekshiring](https://ai.google.dev/pricing)) bu ≈$0.003–0.004 qiladi. Report har biri ≈$0.01. $5/oy byudjet kuniga ~40 faol suhbat oynasi va 3 ta reportga yetadi. `gemini-2.5-flash-lite` taxminan 3–4 barobar arzon. 50%, 80% va 100% da ogohlantirish keladi. 100% da fon tahlili pauzaga o'tadi (xabarlar saqlanib turadi), reportlar va sizning so'rovlaringiz esa ishlashda davom etadi.

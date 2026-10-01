@@ -1,0 +1,1 @@
+ALTER TABLE "as_telegram_updates" ADD COLUMN "locked_at" timestamp with time zone;

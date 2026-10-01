@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { sql } from "drizzle-orm";
+import { buildServer } from "../src/server.js";
 import { db, schema } from "../src/db/client.js";
 import { runSlot, runDueReports } from "../src/reports/service.js";
 import { gatherReportData } from "../src/reports/data.js";
@@ -39,6 +41,40 @@ describe("Scheduled reports", () => {
     // evening sent normally later
     expect(await runDueReports("scheduler", tash("2026-09-29T18:00:05"))).toEqual({ EVENING: "SENT" });
     expect(await runDueReports("scheduler", tash("2026-09-29T18:05:00"))).toEqual({});
+  });
+
+  it("a report that was delivered is never re-sent, even if bookkeeping fails afterwards", async () => {
+    await db().execute(sql`alter table as_reports rename to as_reports_tmp`);
+    try {
+      expect(await runSlot("2026-09-29", "MORNING", "scheduler", tash("2026-09-29T09:01:00"))).toBe("SENT");
+    } finally {
+      await db().execute(sql`alter table as_reports_tmp rename to as_reports`);
+    }
+    // retry 20 minutes later (past the SENDING lock timeout) must not deliver it again
+    expect(await runSlot("2026-09-29", "MORNING", "cron", tash("2026-09-29T09:21:00"))).toBe("ALREADY");
+    expect(ownerTexts().filter((t) => t.includes("ERTALABKI"))).toHaveLength(1);
+    const [run] = await db().select().from(schema.reportRuns);
+    expect(run.status).toBe("SENT");
+  });
+
+  it("cron report endpoint folds missed earlier slots instead of sending them out of order later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(tash("2026-09-29T18:00:30"));
+    const app = buildServer();
+    try {
+      const auth = { authorization: "Bearer cron-secret" };
+      const ev = await app.inject({ method: "POST", url: "/internal/cron/report/evening", headers: auth });
+      expect(ev.json().result).toBe("SENT");
+      expect(ev.json().results).toEqual({ MORNING: "SKIPPED", MIDDAY: "SKIPPED", EVENING: "SENT" });
+      // a late in-process tick or a late morning cron call does not send stale briefs
+      expect(await runDueReports("scheduler", tash("2026-09-29T18:01:00"))).toEqual({});
+      const mo = await app.inject({ method: "POST", url: "/internal/cron/report/morning", headers: auth });
+      expect(mo.json().result).toBe("ALREADY");
+      expect(ownerTexts()).toHaveLength(1);
+    } finally {
+      await app.close();
+      vi.useRealTimers();
+    }
   });
 
   it("uses a deterministic fallback when AI is unavailable (report still delivered)", async () => {

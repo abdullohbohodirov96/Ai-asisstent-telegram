@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, schema } from "../src/db/client.js";
-import { enqueueUpdate, processPendingUpdates } from "../src/telegram/ingest.js";
+import { enqueueUpdate, processPendingUpdates, recoverStuckUpdates } from "../src/telegram/ingest.js";
+import { scrub } from "../src/util/log.js";
 import { formBatches } from "../src/engine/batcher.js";
 import { buildServer } from "../src/server.js";
-import { resetDb, installFakeTelegram, installFakeAI, wire, businessMessage, businessConnection, tash, sent, OWNER, emptyAnalysis } from "./helpers.js";
+import { resetDb, installFakeTelegram, installFakeAI, wire, businessMessage, businessConnection, ownerMessage, tash, sent, OWNER, emptyAnalysis } from "./helpers.js";
 
 beforeEach(async () => {
   await resetDb();
@@ -93,5 +94,43 @@ describe("Telegram ingest", () => {
     expect(cronOk.statusCode).toBe(200);
     expect(sent.every((s) => s.params.chat_id === undefined || s.params.chat_id === OWNER)).toBe(true);
     await app.close();
+  });
+
+  it("stuck-update recovery is based on the claim time, not on when the update was received", async () => {
+    await enqueueUpdate(businessMessage({ id: 1, date: new Date() }));
+    const old = new Date(Date.now() - 60 * 60_000);
+    // a retry of an hour-old update that was claimed just now must not be reset (double processing)
+    await db().update(schema.telegramUpdates).set({ status: "PROCESSING", receivedAt: old, lockedAt: new Date() });
+    await recoverStuckUpdates();
+    expect((await db().select().from(schema.telegramUpdates))[0].status).toBe("PROCESSING");
+    // a claim older than 10 minutes is a crashed run → back to the queue
+    await db().update(schema.telegramUpdates).set({ lockedAt: new Date(Date.now() - 11 * 60_000) });
+    await recoverStuckUpdates();
+    expect((await db().select().from(schema.telegramUpdates))[0].status).toBe("PENDING");
+  });
+
+  it("owner messages are handled at most once, even if the update is retried", async () => {
+    installFakeAI(() => ({ reply_text: "Bajarildi", actions: [{ type: "CREATE_TASK", title: "Qo'ng'iroq", details: null, due_iso: null, owner_name: null, project_name: null, task_id: null, preference_id: null, scope: null }] }));
+    await enqueueUpdate(ownerMessage({ id: 7, text: "Boburga qo'ng'iroqni eslat" }));
+    await processPendingUpdates();
+    const before = sent.filter((x) => x.method === "sendMessage").length;
+    expect(await db().select().from(schema.tasks)).toHaveLength(1);
+    // simulate a retry (e.g. a crash after the handler ran but before the update was marked DONE)
+    await db().update(schema.telegramUpdates).set({ status: "PENDING" });
+    await processPendingUpdates();
+    expect(sent.filter((x) => x.method === "sendMessage").length).toBe(before);
+    expect(await db().select().from(schema.tasks)).toHaveLength(1);
+  });
+
+  it("logs never contain bound query params (private message text)", () => {
+    const e = Object.assign(new Error('Failed query: insert into "as_messages" ("text") values ($1)\nparams: Salom, bu maxfiy xabar'), {
+      query: 'insert into "as_messages" ("text") values ($1)',
+      params: ["Salom, bu maxfiy xabar"],
+      cause: new Error("connection terminated"),
+    });
+    const out = scrub(e);
+    expect(out).not.toContain("maxfiy");
+    expect(out).toContain("connection terminated");
+    expect(scrub("Failed query: x\nparams: maxfiy")).not.toContain("maxfiy");
   });
 });

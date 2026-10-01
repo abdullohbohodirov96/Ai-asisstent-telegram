@@ -91,12 +91,12 @@ describe("End-to-end Shadow Mode V1 flow", () => {
     expect(question).toBeTruthy();
 
     // 3) owner answers vaguely → one focused follow-up
-    await enqueueUpdate(ownerMessage({ id: 100, text: "prosto yoqmadi" }));
+    await enqueueUpdate(ownerMessage({ id: 100, text: "prosto yoqmadi", date: tash("2026-09-29T10:09:00") }));
     await tick({ now: tash("2026-09-29T10:10:00") });
     expect(ownerTexts().at(-1)).toContain("hook, syujet");
 
     // 4) owner answers concretely → resolved + owner-confirmed learning
-    await enqueueUpdate(ownerMessage({ id: 101, text: "Juda reklamaga o'xshab ketgan, real ustoz bilan boshlanishi kerak" }));
+    await enqueueUpdate(ownerMessage({ id: 101, text: "Juda reklamaga o'xshab ketgan, real ustoz bilan boshlanishi kerak", date: tash("2026-09-29T10:11:00") }));
     await tick({ now: tash("2026-09-29T10:12:00") });
     const [q] = await db().select().from(schema.learningQuestions);
     expect(q.status).toBe("RESOLVED");
@@ -124,7 +124,8 @@ describe("End-to-end Shadow Mode V1 flow", () => {
     // 7) Shadow Mode: nothing was sent to anyone but the owner
     expect(sent.length).toBeGreaterThan(0);
     for (const s of sent) {
-      expect(s.params.business_connection_id).toBeUndefined();
+      // the only call allowed to carry it is the read-only ownership check
+      if (s.method !== "getBusinessConnection") expect(s.params.business_connection_id).toBeUndefined();
       if (s.method === "sendMessage") expect(s.params.chat_id).toBe(OWNER);
     }
     const blocked = await db().select().from(schema.outboundAudit);

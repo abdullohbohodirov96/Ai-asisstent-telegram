@@ -23,7 +23,8 @@ async function main() {
   wireApp();
   if (c.runMigrationsOnStart) await runMigrations();
   await ensureOwnerPerson();
-  if (!c.telegram.webhookSecret) log.warn("TELEGRAM_WEBHOOK_SECRET is empty — set it in production");
+  if (!c.telegram.webhookSecret)
+    log.warn(c.isProd ? "TELEGRAM_WEBHOOK_SECRET is empty — webhook REJECTS all updates (503) until it is set" : "TELEGRAM_WEBHOOK_SECRET is empty");
   if (!c.cronSecret) log.warn("CRON_SECRET is empty — cron endpoints are disabled");
   if (!c.gemini.apiKey) log.warn("GEMINI_API_KEY is empty — AI features will fail (messages are still stored)");
 
@@ -41,6 +42,14 @@ async function main() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 }
+
+// Node's default handlers print the raw error (Drizzle errors embed bound query params,
+// i.e. private message text). Log through the scrubbing logger instead.
+process.on("unhandledRejection", (e) => log.error("unhandled rejection", { err: e }));
+process.on("uncaughtException", (e) => {
+  log.error("uncaught exception", { err: e });
+  process.exit(1);
+});
 
 main().catch((e) => {
   log.error("fatal startup error", { err: e });

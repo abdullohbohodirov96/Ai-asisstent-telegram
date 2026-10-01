@@ -9,7 +9,7 @@ import { transcriptionProvider } from "../transcription/provider.js";
 import { downloadFileForAnalysis } from "./files.js";
 import { fmtLocal, nowLocal, parseAiDate } from "../util/time.js";
 import { backoffMs } from "../util/retry.js";
-import { log } from "../util/log.js";
+import { errorText, log } from "../util/log.js";
 
 const MAX_BATCH_ATTEMPTS = 8;
 const OPEN_TASK_STATUSES = ["INBOX", "TODO", "IN_PROGRESS", "WAITING", "SUBMITTED", "REVISION"];
@@ -61,7 +61,7 @@ export async function analyzePendingBatches(max = 5): Promise<number> {
       log.error("batch analysis failed", { batchId: batch.id, attempts: batch.attempts, err: e });
       await db()
         .update(schema.messageBatches)
-        .set({ status: "FAILED", lockedAt: null, error: String((e as Error)?.message ?? e).slice(0, 300), nextAttemptAt: new Date(Date.now() + backoffMs(batch.attempts)) })
+        .set({ status: "FAILED", lockedAt: null, error: errorText(e), nextAttemptAt: new Date(Date.now() + backoffMs(batch.attempts)) })
         .where(eq(schema.messageBatches.id, batch.id));
       await db().update(schema.messages).set({ analysisStatus: "FAILED" }).where(eq(schema.messages.batchId, batch.id));
     }
@@ -257,6 +257,8 @@ export async function persistAnalysis(batch: Batch, chat: Chat, msgs: Msg[], a: 
             status: t.status,
             deadline: deadline ?? undefined,
             remindAt: remindAt ?? undefined,
+            // a new reminder time must fire again even if an earlier one was already sent
+            remindedAt: remindAt ? null : undefined,
             completedAt: t.status === "DONE" ? new Date() : undefined,
             evidenceMessageIds: sql`array_cat(${schema.tasks.evidenceMessageIds}, ${sql`ARRAY[${sql.join(ev(t.evidence_message_ids).map((i) => sql`${i}`), sql`, `)}]::int[]`})`,
             updatedAt: new Date(),

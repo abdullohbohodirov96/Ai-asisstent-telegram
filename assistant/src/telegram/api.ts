@@ -1,7 +1,9 @@
 import { config } from "../config/env.js";
 import { db, schema } from "../db/client.js";
 import { log } from "../util/log.js";
-import { checkOutbound, ShadowModeViolation } from "./shadowGuard.js";
+import { checkOutbound, OWNER_VERIFIED, ShadowModeViolation } from "./shadowGuard.js";
+
+const HTTP_TIMEOUT_MS = 30_000;
 
 /**
  * The ONLY place in the codebase that talks to the Telegram Bot API.
@@ -15,6 +17,8 @@ const httpTransport: Transport = async (method, params) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
+    // A hung request would otherwise block the single-flight worker tick forever.
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   const json = (await res.json()) as { ok: boolean; result?: unknown; description?: string };
   if (!json.ok) throw new Error(`Telegram ${method} failed: ${json.description ?? res.status}`);
@@ -45,8 +49,9 @@ export async function callTelegram<T = any>(method: string, params: Record<strin
     log.warn("SHADOW MODE BLOCKED outbound call", { method, reason: decision.reason });
     throw new ShadowModeViolation(method, decision.reason);
   }
-  const { __ownerVerified, ...clean } = params;
-  return transport(method, clean);
+  // Object spread copies symbol keys too; drop the owner-verified marker explicitly.
+  const { [OWNER_VERIFIED]: _verified, ...clean } = params as Record<PropertyKey, unknown>;
+  return transport(method, clean as Record<string, unknown>);
 }
 
 const TG_LIMIT = 3900;
@@ -89,12 +94,12 @@ export async function sendToOwner(text: string, opts: SendOptions = {}): Promise
 
 export async function answerOwnerCallback(callbackQueryId: string, fromId: number, text?: string) {
   if (fromId !== config().telegram.ownerId) return; // never respond to non-owners
-  await callTelegram("answerCallbackQuery", { callback_query_id: callbackQueryId, text, __ownerVerified: true });
+  await callTelegram("answerCallbackQuery", { callback_query_id: callbackQueryId, text, [OWNER_VERIFIED]: true });
 }
 
 export async function downloadFile(fileId: string): Promise<{ data: Buffer; path: string }> {
   const file = await callTelegram<{ file_path: string }>("getFile", { file_id: fileId });
-  const res = await fetch(`https://api.telegram.org/file/bot${config().telegram.token}/${file.file_path}`);
+  const res = await fetch(`https://api.telegram.org/file/bot${config().telegram.token}/${file.file_path}`, { signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`file download failed: ${res.status}`);
   return { data: Buffer.from(await res.arrayBuffer()), path: file.file_path };
 }
