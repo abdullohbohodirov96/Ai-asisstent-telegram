@@ -44,7 +44,11 @@ export async function formBatches(now: Date = new Date()): Promise<number[]> {
         .select()
         .from(schema.messageBatches)
         .where(and(eq(schema.messageBatches.chatId, g.chatId), eq(schema.messageBatches.windowStart, g.start)))
-        .orderBy(desc(schema.messageBatches.seq));
+        .orderBy(desc(schema.messageBatches.seq))
+        // Row lock: claimNextBatch() uses FOR UPDATE SKIP LOCKED, so an analyzer in another
+        // process (e.g. during a Render deploy overlap) cannot claim this batch while late
+        // messages are being attached to it (they would be marked DONE without analysis).
+        .for("update");
       let batchId: number;
       const reusable = existing.find((b) => b.status === "PENDING");
       if (reusable) {

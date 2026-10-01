@@ -24,6 +24,15 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(5),
   DATABASE_SSL: bool(true),
 
+  /** gemini = Google API key (server); claude-cli = local `claude -p` with the owner's Claude subscription (laptop worker). */
+  AI_PROVIDER: z.enum(["gemini", "claude-cli"]).default("gemini"),
+  CLAUDE_CLI_PATH: z.string().default("claude"),
+  CLAUDE_MODEL_FAST: z.string().default("sonnet"),
+  CLAUDE_MODEL_DEEP: z.string().default("sonnet"),
+  CLAUDE_CLI_TIMEOUT_SECONDS: z.coerce.number().int().min(10).default(300),
+  /** Thinking effort for `claude -p` (low|medium|high). Low = faster, fewer subscription tokens. */
+  CLAUDE_EFFORT: z.enum(["low", "medium", "high"]).default("low"),
+
   GEMINI_API_KEY: z.string().optional().default(""),
   GEMINI_MODEL_FAST: z.string().default("gemini-3.5-flash-lite"),
   GEMINI_MODEL_DEEP: z.string().default("gemini-3.5-flash-lite"),
@@ -74,6 +83,14 @@ function buildConfig(env: z.infer<typeof EnvSchema>) {
       webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
     },
     db: { url: env.DATABASE_URL, ssl: env.DATABASE_SSL },
+    aiProvider: env.AI_PROVIDER,
+    claudeCli: {
+      path: env.CLAUDE_CLI_PATH,
+      modelFast: env.CLAUDE_MODEL_FAST,
+      modelDeep: env.CLAUDE_MODEL_DEEP,
+      timeoutMs: env.CLAUDE_CLI_TIMEOUT_SECONDS * 1000,
+      effort: env.CLAUDE_EFFORT,
+    },
     gemini: {
       apiKey: env.GEMINI_API_KEY,
       modelFast: env.GEMINI_MODEL_FAST,

@@ -7,7 +7,7 @@ import { gatherReportData, windowFor, type ReportSlot } from "./data.js";
 import { renderFallbackReport, reportTitle } from "./render.js";
 import { localDate, nowLocal, slotTime, SLOTS, type Slot } from "../util/time.js";
 import { refreshProfiles } from "../engine/learning.js";
-import { log } from "../util/log.js";
+import { errorText, log } from "../util/log.js";
 
 export async function buildReportText(slot: ReportSlot, now = new Date(), sinceOverride?: Date): Promise<{ text: string; usedAi: boolean; model: string | null }> {
   const data = await gatherReportData(slot, now, sinceOverride);
@@ -27,7 +27,12 @@ export async function buildReportText(slot: ReportSlot, now = new Date(), sinceO
   }
 }
 
-export async function generateAndSendReport(slot: ReportSlot, now = new Date(), sinceOverride?: Date): Promise<number> {
+export async function generateAndSendReport(
+  slot: ReportSlot,
+  now = new Date(),
+  sinceOverride?: Date,
+  onSent?: () => Promise<void>,
+): Promise<number | null> {
   if (slot === "EVENING") {
     try {
       await refreshProfiles();
@@ -37,11 +42,19 @@ export async function generateAndSendReport(slot: ReportSlot, now = new Date(), 
   }
   const r = await buildReportText(slot, now, sinceOverride);
   const ids = await notifyOwner(r.text);
-  const [row] = await db()
-    .insert(schema.reports)
-    .values({ slot, reportDate: localDate(now), text: r.text, model: r.model, usedAi: r.usedAi, telegramMessageIds: ids })
-    .returning({ id: schema.reports.id });
-  return row.id;
+  // From here on the owner HAS the report. Bookkeeping failures must not turn into a
+  // FAILED run (that would be retried and the same report delivered twice).
+  if (onSent) await onSent().catch((e) => log.error("report run could not be marked SENT", { slot, err: e }));
+  try {
+    const [row] = await db()
+      .insert(schema.reports)
+      .values({ slot, reportDate: localDate(now), text: r.text, model: r.model, usedAi: r.usedAi, telegramMessageIds: ids })
+      .returning({ id: schema.reports.id });
+    return row.id;
+  } catch (e) {
+    log.error("report row insert failed (report was delivered)", { slot, err: e });
+    return null;
+  }
 }
 
 // ------------------------------------------------------------------ scheduled slots (idempotent)
@@ -67,13 +80,22 @@ export async function runSlot(date: string, slot: Slot, trigger: string, now = n
     )
     .returning();
   if (!claimed.length) return "ALREADY";
+  const runId = claimed[0].id;
+  let delivered = false;
   try {
-    const reportId = await generateAndSendReport(slot, now, opts.sinceOverride);
-    await d.update(schema.reportRuns).set({ status: "SENT", sentAt: new Date(), reportId, error: null }).where(eq(schema.reportRuns.id, claimed[0].id));
+    const reportId = await generateAndSendReport(slot, now, opts.sinceOverride, async () => {
+      delivered = true;
+      await d.update(schema.reportRuns).set({ status: "SENT", sentAt: new Date(), error: null }).where(eq(schema.reportRuns.id, runId));
+    });
+    if (reportId) await d.update(schema.reportRuns).set({ reportId }).where(eq(schema.reportRuns.id, runId));
     return "SENT";
   } catch (e) {
+    if (delivered) {
+      log.error("report delivered but post-processing failed", { slot, date, err: e });
+      return "SENT";
+    }
     log.error("report run failed", { slot, date, err: e });
-    await d.update(schema.reportRuns).set({ status: "FAILED", error: String((e as Error)?.message ?? e).slice(0, 300) }).where(eq(schema.reportRuns.id, claimed[0].id));
+    await d.update(schema.reportRuns).set({ status: "FAILED", error: errorText(e) }).where(eq(schema.reportRuns.id, runId));
     return "FAILED";
   }
 }

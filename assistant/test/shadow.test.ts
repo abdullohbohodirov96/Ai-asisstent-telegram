@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, schema } from "../src/db/client.js";
 import { callTelegram, sendToOwner } from "../src/telegram/api.js";
-import { checkOutbound, effectiveFlags, ShadowModeViolation } from "../src/telegram/shadowGuard.js";
+import { checkOutbound, effectiveFlags, OWNER_VERIFIED, ShadowModeViolation } from "../src/telegram/shadowGuard.js";
 import { enqueueUpdate, processPendingUpdates } from "../src/telegram/ingest.js";
 import { formBatches } from "../src/engine/batcher.js";
 import { analyzePendingBatches } from "../src/engine/analyzer.js";
@@ -37,6 +37,35 @@ describe("Shadow Mode outbound blocking", () => {
     expect(sent[0].params.chat_id).toBe(OWNER);
   });
 
+  it("cannot be bypassed via chat_id coercion, forged owner flag, webhook management or business reads", async () => {
+    for (const chat_id of [[OWNER], `${OWNER}.0`, ` ${OWNER}`, `${OWNER}abc`, true, null, undefined, `@channel`]) {
+      expect(checkOutbound("sendMessage", { chat_id, text: "x" }).allowed).toBe(false);
+    }
+    expect(checkOutbound("sendMessage", { chat_id: String(OWNER), text: "x" }).allowed).toBe(true);
+    // a plain string key cannot forge the owner-verified marker
+    expect(checkOutbound("answerCallbackQuery", { callback_query_id: "x", __ownerVerified: true }).allowed).toBe(false);
+    expect(checkOutbound("answerCallbackQuery", { callback_query_id: "x", [OWNER_VERIFIED]: true }).allowed).toBe(true);
+    expect(checkOutbound("answerCallbackQuery", { callback_query_id: "x", url: "https://evil", [OWNER_VERIFIED]: true }).allowed).toBe(false);
+    for (const m of ["setWebhook", "deleteWebhook", "setMyCommands", "logOut", "close"]) expect(checkOutbound(m, {}).allowed).toBe(false);
+    // business_connection_id is tolerated only on the read-only getter
+    expect(checkOutbound("getBusinessConnection", { business_connection_id: "c" }).allowed).toBe(true);
+    expect(checkOutbound("sendChatAction", { chat_id: OWNER, action: "typing", business_connection_id: "c" }).allowed).toBe(false);
+    // the symbol marker never reaches the transport
+    await callTelegram("answerCallbackQuery", { callback_query_id: "x", [OWNER_VERIFIED]: true });
+    expect(Object.getOwnPropertySymbols(sent.at(-1)!.params)).toHaveLength(0);
+  });
+
+  it("ignores business messages from a connection that Telegram reports as belonging to someone else", async () => {
+    installFakeAI(() => emptyAnalysis());
+    await enqueueUpdate(businessMessage({ id: 1, text: "begona akkaunt", connection: "conn-stranger", date: tash("2026-09-29T10:00:00") }));
+    await processPendingUpdates();
+    expect(await db().select().from(schema.messages)).toHaveLength(0);
+    const [bc] = await db().select().from(schema.businessConnections);
+    expect(bc.userId).not.toBe(OWNER);
+    const [u] = await db().select().from(schema.telegramUpdates);
+    expect(u.status).toBe("IGNORED");
+  });
+
   it("keeps ALLOW_* flags effectively off in V1 even if env enables them", () => {
     const c = config();
     const saved = { ...c.flagsRequested };
@@ -63,7 +92,8 @@ describe("Shadow Mode outbound blocking", () => {
     await analyzePendingBatches();
     expect(sent.length).toBeGreaterThanOrEqual(0);
     for (const s of sent) {
-      expect(s.params.business_connection_id).toBeUndefined();
+      // the only call allowed to carry it is the read-only ownership check
+      if (s.method !== "getBusinessConnection") expect(s.params.business_connection_id).toBeUndefined();
       if (s.method === "sendMessage") expect(s.params.chat_id).toBe(OWNER);
     }
   });

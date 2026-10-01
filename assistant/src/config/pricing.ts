@@ -29,6 +29,8 @@ export function resolvePricing(overrideJson: string): Record<string, ModelPrice>
 }
 
 export function priceFor(model: string, table: Record<string, ModelPrice>): ModelPrice {
+  // Local Claude Code CLI runs on the owner's subscription: no per-token charge.
+  if (model.startsWith("claude-cli:")) return table[model] ?? { input: 0, output: 0 };
   return table[model] ?? table["*"] ?? { input: 0, output: 0 };
 }
 

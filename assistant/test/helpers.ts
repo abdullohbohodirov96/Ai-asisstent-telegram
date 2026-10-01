@@ -37,6 +37,11 @@ export function installFakeTelegram() {
   setTransport(async (method, params) => {
     sent.push({ method, params });
     if (method === "sendMessage") return { message_id: ++msgId };
+    if (method === "getBusinessConnection") {
+      // Unknown connections are verified with Telegram; CONN belongs to the owner, anything else to a stranger.
+      const id = String(params.business_connection_id);
+      return { id, user: { id: id === CONN ? OWNER : 9_999_999, first_name: "x" }, user_chat_id: id === CONN ? OWNER : 9_999_999, date: 0, is_enabled: true };
+    }
     return true;
   });
 }
@@ -96,14 +101,14 @@ export function emptyAnalysis(over: Partial<BatchAnalysis> = {}): BatchAnalysis 
 }
 
 let upd = 1;
-export function businessMessage(opts: { id: number; from?: number; text?: string; date: Date; chatWith?: number; voice?: boolean }) {
+export function businessMessage(opts: { id: number; from?: number; text?: string; date: Date; chatWith?: number; voice?: boolean; connection?: string }) {
   const chatWith = opts.chatWith ?? BOBUR;
   const from = opts.from ?? chatWith;
   return {
     update_id: upd++,
     business_message: {
       message_id: opts.id,
-      business_connection_id: CONN,
+      business_connection_id: opts.connection ?? CONN,
       date: Math.floor(opts.date.getTime() / 1000),
       chat: { id: chatWith, type: "private", first_name: chatWith === BOBUR ? "Bobur" : "Ali" },
       from: from === OWNER ? { id: OWNER, first_name: "Abdulloh" } : { id: from, first_name: from === BOBUR ? "Bobur" : "Ali" },
@@ -112,13 +117,13 @@ export function businessMessage(opts: { id: number; from?: number; text?: string
   };
 }
 
-export function ownerMessage(opts: { id: number; text?: string; voice?: boolean; replyTo?: number; from?: number }) {
+export function ownerMessage(opts: { id: number; text?: string; voice?: boolean; replyTo?: number; from?: number; date?: Date }) {
   const from = opts.from ?? OWNER;
   return {
     update_id: upd++,
     message: {
       message_id: opts.id,
-      date: Math.floor(Date.now() / 1000),
+      date: Math.floor((opts.date ?? new Date()).getTime() / 1000),
       chat: { id: from, type: "private" },
       from: { id: from, first_name: from === OWNER ? "Abdulloh" : "Begona" },
       ...(opts.voice ? { voice: { file_id: "v1", duration: 4 } } : { text: opts.text ?? "" }),

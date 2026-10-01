@@ -49,10 +49,12 @@ export const telegramUpdates = pgTable(
     updateId: tgId("update_id").primaryKey(),
     kind: text("kind").notNull(),
     payload: jsonb("payload").notNull(),
-    status: text("status").notNull().default("PENDING"), // PENDING | DONE | FAILED | IGNORED
+    status: text("status").notNull().default("PENDING"), // PENDING | PROCESSING | DONE | FAILED | IGNORED
     attempts: integer("attempts").notNull().default(0),
     nextAttemptAt: tsz("next_attempt_at").notNull().defaultNow(),
     error: text("error"),
+    /** When the current PROCESSING claim was taken (stuck-claim recovery is based on this, not on received_at). */
+    lockedAt: tsz("locked_at"),
     receivedAt: tsz("received_at").notNull().defaultNow(),
     processedAt: tsz("processed_at"),
   },

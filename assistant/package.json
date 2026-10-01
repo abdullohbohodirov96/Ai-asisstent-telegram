@@ -2,7 +2,7 @@
   "name": "abdulloh-ai-assistant",
   "version": "1.0.0",
   "private": true,
-  "description": "ABDULLOH AI ASSISTANT — Shadow Mode V1 (Telegram Business AI Chief of Staff)",
+  "description": "ABDULLOH AI ASSISTANT \u2014 Shadow Mode V1 (Telegram Business AI Chief of Staff)",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -15,7 +15,9 @@
     "migrate:dev": "tsx src/db/migrate.ts",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "worker": "node --env-file=.env dist/src/worker-local.js",
+    "worker:dev": "tsx --env-file=.env src/worker-local.ts"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

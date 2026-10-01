@@ -3,8 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import { config } from "./config/env.js";
 import { enqueueUpdate } from "./telegram/ingest.js";
 import { tick, kick } from "./jobs/worker.js";
-import { runSlot } from "./reports/service.js";
-import { localDate, SLOTS, type Slot } from "./util/time.js";
+import { runDueReports, runSlot } from "./reports/service.js";
+import { localDate, slotTime, SLOTS, type Slot } from "./util/time.js";
 import { getPool } from "./db/client.js";
 import { SHADOW_MODE_V1_LOCK } from "./telegram/shadowGuard.js";
 import { log } from "./util/log.js";
@@ -44,6 +44,10 @@ export function buildServer(): FastifyInstance {
     if (expected) {
       const got = String(req.headers["x-telegram-bot-api-secret-token"] ?? "");
       if (!safeEqual(got, expected)) return reply.code(401).send({ ok: false });
+    } else if (config().isProd) {
+      // Fail closed: without the secret anyone who knows the URL could forge updates
+      // "from" the owner (run commands, inject fake business messages, burn the AI budget).
+      return reply.code(503).send({ ok: false });
     }
     try {
       const fresh = await enqueueUpdate(req.body);
@@ -67,8 +71,14 @@ export function buildServer(): FastifyInstance {
     if (!cronAuthorized(req.headers as Record<string, unknown>)) return reply.code(401).send({ ok: false });
     const slot = req.params.slot.toUpperCase() as Slot;
     if (!SLOTS.includes(slot)) return reply.code(400).send({ ok: false, error: "slot must be morning|midday|evening" });
-    const result = await runSlot(localDate(), slot, "cron", new Date(), { force: req.query.force === "1" });
-    return { ok: true, slot, result };
+    const now = new Date();
+    const date = localDate(now);
+    if (req.query.force === "1") return { ok: true, slot, result: await runSlot(date, slot, "cron", now, { force: true }) };
+    if (slotTime(date, slot).toJSDate() > now) return { ok: true, slot, result: "NOT_DUE" };
+    // Same path as the in-process scheduler: if earlier slots were missed (host slept),
+    // they are folded into the latest due report instead of being sent out of order later.
+    const results = await runDueReports("cron", now);
+    return { ok: true, slot, result: results[slot] ?? "ALREADY", results };
   });
 
   return app;

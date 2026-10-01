@@ -10,10 +10,32 @@ const SECRET_PATTERNS: RegExp[] = [
   /(api[_-]?key|token|secret|password)=([^&\s"']+)/gi,
 ];
 
+/**
+ * Drizzle wraps driver errors as `Failed query: <sql>\nparams: <values>`. The params are
+ * bound values — private message text, AI output, names — so they must never reach logs.
+ */
+const QUERY_PARAMS_RE = /\n?params:[\s\S]*$/;
+
+function describeError(e: Error): string {
+  // DrizzleQueryError: keep the query shape and the driver's own message, drop the values.
+  const anyE = e as Error & { query?: unknown; params?: unknown; cause?: unknown };
+  if (typeof anyE.query === "string" && "params" in anyE) {
+    const cause = anyE.cause instanceof Error ? ` — ${anyE.cause.message}` : "";
+    return `${e.name}: query failed (${anyE.query.slice(0, 120)})${cause}`;
+  }
+  return `${e.name}: ${e.message}`;
+}
+
 export function scrub(input: unknown): string {
-  let s = typeof input === "string" ? input : input instanceof Error ? `${input.name}: ${input.message}` : safeJson(input);
+  let s = typeof input === "string" ? input : input instanceof Error ? describeError(input) : safeJson(input);
+  s = s.replace(QUERY_PARAMS_RE, " params: [REDACTED]");
   for (const re of SECRET_PATTERNS) s = s.replace(re, (m, k) => (typeof k === "string" && m.includes("=") ? `${k}=[REDACTED]` : "[REDACTED]"));
   return s.length > 500 ? s.slice(0, 500) + "…" : s;
+}
+
+/** Short, scrubbed error text for DB `error` columns. */
+export function errorText(e: unknown, max = 300): string {
+  return scrub(e).slice(0, max);
 }
 
 function safeJson(v: unknown): string {

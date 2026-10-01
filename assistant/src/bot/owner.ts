@@ -42,7 +42,10 @@ export async function onOwnerMessage(messageRowId: number, raw: any): Promise<vo
   }
 
   // 1) Is it an answer to a learning question?
-  const q = await findQuestionForReply(raw.reply_to_message?.message_id ?? null);
+  // Judge "is a question awaiting an answer" at the time the owner wrote, not when the
+  // (possibly retried / delayed after host sleep) update is processed.
+  const writtenAt = typeof raw.date === "number" ? new Date(raw.date * 1000) : new Date();
+  const q = await findQuestionForReply(raw.reply_to_message?.message_id ?? null, writtenAt);
   if (q) {
     const explicitReply = raw.reply_to_message?.message_id && raw.reply_to_message.message_id === q.telegramMessageId;
     const outcome = await handleAnswer(q, text, messageRowId, { forceAnswer: Boolean(explicitReply) });

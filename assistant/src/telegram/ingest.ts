@@ -1,8 +1,9 @@
 import { and, eq, inArray, lte, sql, asc } from "drizzle-orm";
 import { config } from "../config/env.js";
 import { db, schema } from "../db/client.js";
-import { log } from "../util/log.js";
+import { errorText, log } from "../util/log.js";
 import { backoffMs } from "../util/retry.js";
+import { callTelegram } from "./api.js";
 
 /**
  * Stage 1 (webhook, fast): persist the raw update, idempotent on update_id.
@@ -61,7 +62,7 @@ export async function processPendingUpdates(limit = 50): Promise<number> {
     // claim (protects against a concurrent worker / cron call)
     const claimed = await d
       .update(schema.telegramUpdates)
-      .set({ status: "PROCESSING", attempts: u.attempts + 1 })
+      .set({ status: "PROCESSING", attempts: u.attempts + 1, lockedAt: new Date() })
       .where(and(eq(schema.telegramUpdates.updateId, u.updateId), inArray(schema.telegramUpdates.status, ["PENDING", "FAILED"])))
       .returning({ id: schema.telegramUpdates.updateId });
     if (!claimed.length) continue;
@@ -69,26 +70,35 @@ export async function processPendingUpdates(limit = 50): Promise<number> {
       const status = await handleUpdate(u.payload);
       await d
         .update(schema.telegramUpdates)
-        .set({ status, processedAt: new Date(), error: null })
+        .set({ status, processedAt: new Date(), lockedAt: null, error: null })
         .where(eq(schema.telegramUpdates.updateId, u.updateId));
       done++;
     } catch (e) {
       log.error("update processing failed", { updateId: u.updateId, kind: u.kind, err: e });
       await d
         .update(schema.telegramUpdates)
-        .set({ status: "FAILED", error: String((e as Error)?.message ?? e).slice(0, 300), nextAttemptAt: new Date(Date.now() + backoffMs(u.attempts + 1, 10_000)) })
+        .set({ status: "FAILED", lockedAt: null, error: errorText(e), nextAttemptAt: new Date(Date.now() + backoffMs(u.attempts + 1, 10_000)) })
         .where(eq(schema.telegramUpdates.updateId, u.updateId));
     }
   }
   return done;
 }
 
-/** Reset updates stuck in PROCESSING (process crashed mid-way). */
+/**
+ * Reset updates stuck in PROCESSING (process crashed mid-way). Based on the claim time,
+ * not received_at: a retried update received long ago must not be reset while it is
+ * still being processed, otherwise it would be handled twice.
+ */
 export async function recoverStuckUpdates(): Promise<void> {
   await db()
     .update(schema.telegramUpdates)
-    .set({ status: "PENDING" })
-    .where(and(eq(schema.telegramUpdates.status, "PROCESSING"), lte(schema.telegramUpdates.receivedAt, new Date(Date.now() - 10 * 60_000))));
+    .set({ status: "PENDING", lockedAt: null })
+    .where(
+      and(
+        eq(schema.telegramUpdates.status, "PROCESSING"),
+        sql`coalesce(${schema.telegramUpdates.lockedAt}, ${schema.telegramUpdates.receivedAt}) <= ${new Date(Date.now() - 10 * 60_000)}`,
+      ),
+    );
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -145,11 +155,18 @@ export async function upsertBusinessConnection(bc: any) {
 
 async function connectionBelongsToOwner(connectionId: string | undefined): Promise<boolean> {
   if (!connectionId) return false;
-  const [bc] = await db().select().from(schema.businessConnections).where(eq(schema.businessConnections.id, connectionId));
-  // If we never saw the business_connection update (e.g. bot connected before deploy),
-  // accept it: Telegram only delivers business updates for accounts that connected THIS bot,
-  // and the webhook is secret-protected. Still, a known non-owner connection is rejected.
-  if (!bc) return true;
+  let [bc] = await db().select().from(schema.businessConnections).where(eq(schema.businessConnections.id, connectionId));
+  if (!bc) {
+    // We never saw the business_connection update (bot connected before deploy, or the update
+    // was lost). Any Telegram Premium user can connect this bot to THEIR account, so an unknown
+    // connection is never trusted blindly: ask Telegram who owns it (read-only call). If this
+    // throws, the update is retried later instead of being stored unverified.
+    const info = await callTelegram<any>("getBusinessConnection", { business_connection_id: connectionId });
+    if (!info || info.id !== connectionId) return false;
+    await upsertBusinessConnection(info);
+    [bc] = await db().select().from(schema.businessConnections).where(eq(schema.businessConnections.id, connectionId));
+    if (!bc) return false;
+  }
   return bc.userId === config().telegram.ownerId && bc.isEnabled;
 }
 
@@ -347,14 +364,39 @@ async function handleBotMessage(m: any): Promise<"DONE" | "IGNORED"> {
     .returning({ id: schema.messages.id });
   let rowId = rows[0]?.id;
   if (!rowId) {
-    // Row exists => this is a retry of a failed update (duplicate deliveries are
-    // already filtered by update_id), so handle it again.
     const [existing] = await db()
       .select({ id: schema.messages.id })
       .from(schema.messages)
       .where(and(eq(schema.messages.chatId, chatId), eq(schema.messages.telegramMessageId, m.message_id)));
     rowId = existing.id;
   }
-  if (ownerHandler) await ownerHandler.onOwnerMessage(rowId, m);
+  // At-most-once: the handler creates tasks/notes and replies, so a retry after a partial
+  // failure must not run it again (duplicate tasks / duplicate answers). The claim flips
+  // SKIPPED → DONE exactly once; a retry of an update whose handler already started is a no-op.
+  const claimed = await db()
+    .update(schema.messages)
+    .set({ analysisStatus: "DONE" })
+    .where(and(eq(schema.messages.id, rowId), eq(schema.messages.analysisStatus, "SKIPPED")))
+    .returning({ id: schema.messages.id });
+  if (!claimed.length) return "DONE";
+  if (ownerHandler) {
+    try {
+      await ownerHandler.onOwnerMessage(rowId, m);
+    } catch (e) {
+      log.error("owner message handling failed", { messageRowId: rowId, err: e });
+      await sendFailureNotice();
+    }
+  }
   return "DONE";
+}
+
+async function sendFailureNotice() {
+  try {
+    await callTelegram("sendMessage", {
+      chat_id: config().telegram.ownerId,
+      text: "⚠️ Xabaringizni qayta ishlashda xatolik bo'ldi. Xabar saqlandi; iltimos, birozdan so'ng qayta yozing.",
+    });
+  } catch {
+    /* best effort */
+  }
 }
